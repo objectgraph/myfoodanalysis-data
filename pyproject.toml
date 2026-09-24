@@ -1,0 +1,23 @@
+[project]
+name = "myfoodanalysis-data"
+version = "2026.4.30"
+description = "How MyFoodAnalysis curates USDA FoodData Central: current foods, one page per branded product, natural names, and tests against USDA"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mfadata"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["slow: scans the full USDA food_nutrient.csv (~40 s)"]
