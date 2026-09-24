@@ -234,16 +234,56 @@ def test_natural_names_keep_the_food(db):
 
 
 def test_duplicates_point_at_a_main_page(db):
-    """Foods sharing a name point at one main page, which is itself a main page (no chains), and leave the sitemap."""
+    """A record points at a main page only if USDA describes both the same way (same brand for products) and their
+    core values agree; the main page is itself a main page (no chains), and duplicates leave the sitemap."""
+    from mfadata.build import identity_description, same_values, CORE
+
     chains = db.execute(
         "select count(*) from food f join food m on m.fdc_id = f.canonical_fdc_id where m.canonical_fdc_id is not null"
     ).fetchone()[0]
     assert chains == 0
     assert db.execute("select count(*) from food where canonical_fdc_id is not null and indexable = 1").fetchone()[0] == 0
-    names = db.execute(
-        "select lower(name), count(*) from food where data_type != 'branded' and canonical_fdc_id is null group by 1 having count(*) > 1"
+    pairs = db.execute(
+        """select f.fdc_id, f.description, f.brand, m.fdc_id, m.description, m.brand
+           from food f join food m on m.fdc_id = f.canonical_fdc_id"""
     ).fetchall()
-    assert names == [], "two generic main pages share a name"
+    assert pairs
+    marks = ",".join("?" * len(CORE))
+    core: dict[int, dict[str, float]] = {}
+    for fid, key, amount in db.execute(f"select fdc_id, key, amount from food_value where key in ({marks})", CORE):
+        core.setdefault(fid, {})[key] = amount
+    for fid, desc, brand, mid, mdesc, mbrand in pairs:
+        assert identity_description(desc) == identity_description(mdesc), (fid, mid)
+        assert (brand or "").lower() == (mbrand or "").lower(), (fid, mid)
+        assert same_values(core.get(fid, {}), core.get(mid, {})), (fid, mid)
+
+
+@pytest.mark.parametrize(
+    "a,b,why",
+    [
+        (2710614, 2710599, "drink powder (218 kcal) is not the prepared drink (2 kcal)"),
+        (170855, 171251, "processed Swiss cheese (1,370 mg sodium) is not Swiss cheese (187 mg)"),
+    ],
+)
+def test_different_foods_are_never_merged(db, a, b, why):
+    """Regressions from the Sept 24, 2026 audit: an AI name once made these look identical."""
+    rows = dict(db.execute("select fdc_id, coalesce(canonical_fdc_id, fdc_id) from food where fdc_id in (?, ?)", (a, b)).fetchall())
+    assert rows[a] != rows[b], why
+    names = dict(db.execute("select fdc_id, lower(name) from food where fdc_id in (?, ?)", (a, b)).fetchall())
+    assert names[a] != names[b], why
+
+
+def test_names_keep_qualifiers_and_negations():
+    from mfadata.names import valid
+
+    assert not valid("Fruit flavored drink, powdered, not reconstituted, diet", "Fruit flavored drink, powdered, diet")
+    assert not valid("Fruit flavored drink, powdered, not reconstituted, diet", "Fruit flavored drink, reconstituted, diet")
+    assert not valid("Cheese, pasteurized process, swiss", "Swiss cheese")
+    assert not valid("Beans, kidney, canned, without salt", "Kidney beans, canned, with salt")
+    assert not valid("Beef, ground, 85% lean meat / 15% fat, raw", "Ground beef, raw")
+    assert valid("Cheese, pasteurized process, swiss", "Processed Swiss cheese")
+    assert valid("Beans, kidney, canned, without salt", "Canned kidney beans, no salt added")
+    assert valid("Bananas, raw", "Banana, raw")
 
 
 def test_thin_branded_labels_stay_out_of_the_sitemap(db):

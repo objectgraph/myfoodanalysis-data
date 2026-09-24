@@ -96,6 +96,47 @@ def keeps_the_food(description: str, name: str) -> bool:
     return False
 
 
+COOKING = r"\b(cooked|boiled|fried|roasted|roast|baked|braised|broiled|grilled|steamed|stewed|microwaved|simmered|sauteed|poached|toasted|scrambled|smoked)\b"
+
+# Qualifiers that change what the food is. If USDA's description has the first pattern, the name must have the
+# second: a name may reword a qualifier but never drop or flip it. Negations are checked as whole phrases, so
+# "not reconstituted" is never satisfied by "reconstituted" (and the reverse).
+QUALIFIERS: list[tuple[str, str, str]] = [
+    ("not reconstituted", r"\bnot reconstituted\b|\bunreconstituted\b", r"\bnot reconstituted\b|\bunreconstituted\b|\bdry\b"),
+    ("reconstituted", r"(?<!not )\breconstituted\b", r"(?<!not )\breconstituted\b|\bprepared\b"),
+    ("without salt", r"\bwithout (added )?salt\b|\bno (added )?salt\b|\bunsalted\b|\bsalt[- ]free\b",
+     r"\bwithout (added )?salt\b|\bno (added )?salt\b|\bunsalted\b|\bsalt[- ]free\b"),
+    ("with salt", r"\bwith (added )?salt\b|(?<!un)\bsalted\b", r"\bwith (added )?salt\b|(?<!un)\bsalted\b"),
+    ("processed", r"\bprocess(ed)?\b", r"\bprocess(ed)?\b"),
+    ("powder", r"\bpowder(ed)?\b", r"\bpowder(ed)?\b|\bdry mix\b"),
+    ("dried", r"\bdried\b|\bdehydrated\b", r"\bdried\b|\bdehydrated\b|\bdry\b"),
+    ("frozen", r"\bfrozen\b", r"\bfrozen\b"),
+    ("canned", r"\bcanned\b", r"\bcanned\b"),
+    ("concentrate", r"\bconcentrate\b", r"\bconcentrate\b"),
+    ("raw", r"\braw\b", r"\braw\b|\buncooked\b"),
+    ("cooked", COOKING, COOKING),
+    ("fat-free", r"\bnonfat\b|\bfat[- ]free\b|\bskim\b", r"\bnonfat\b|\bfat[- ]free\b|\bskim\b"),
+    ("low fat", r"\blow[- ]?fat\b", r"\blow[- ]?fat\b|\b1(\.5)?%"),
+    ("reduced fat", r"\breduced[- ]fat\b", r"\breduced[- ]fat\b|\b2%"),
+    ("diet", r"\bdiet\b", r"\bdiet\b|\bsugar[- ]free\b|\blow[- ]calorie\b"),
+    ("unsweetened", r"\bunsweetened\b|\bno sugar added\b|\bwithout added sugar\b",
+     r"\bunsweetened\b|\bno sugar added\b|\bwithout added sugar\b"),
+    ("sweetened", r"(?<!un)\bsweetened\b", r"(?<!un)\bsweetened\b"),
+    ("decaffeinated", r"\bdecaf", r"\bdecaf"),
+    ("without skin", r"\bwithout skin\b|\bskinless\b|\bskin not eaten\b", r"\bwithout skin\b|\bskinless\b|\bskin not eaten\b|\bskin removed\b|\bno skin\b"),
+    ("with skin", r"\bwith skin\b|\bskin eaten\b", r"\bwith skin\b|\bskin eaten\b|\bskin[- ]on\b"),
+]
+
+
+def qualifiers_kept(description: str, name: str) -> list[str]:
+    """The qualifiers of USDA's description that the name drops or flips (empty when it keeps them all). Every
+    percentage in the description ("85% lean", "2% milkfat") must also appear in the name."""
+    d, n = description.lower(), name.lower()
+    lost = [label for label, in_desc, in_name in QUALIFIERS if re.search(in_desc, d) and not re.search(in_name, n)]
+    lost += [p for p in re.findall(r"\d+(?:\.\d+)?%", d) if p not in n]
+    return lost
+
+
 def valid(description: str, name: str) -> bool:
     return (
         isinstance(name, str)
@@ -103,6 +144,7 @@ def valid(description: str, name: str) -> bool:
         and "\n" not in name
         and not name.endswith(".")
         and keeps_the_food(description, name)
+        and not qualifiers_kept(description, name)
     )
 
 

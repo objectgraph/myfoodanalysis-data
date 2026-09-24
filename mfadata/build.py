@@ -17,6 +17,8 @@ import unicodedata
 from pathlib import Path
 
 from mfadata.nutrients import NUTRIENTS
+from mfadata.estimates import add_estimates
+from mfadata.names import valid as name_is_valid
 
 # SR Legacy foods left out of the default rankings: traditional and regional foods, organ meats, infant
 # foods and commodity items. They keep their pages; "all foods" rankings still include them.
@@ -143,16 +145,44 @@ def sentence_case(text: str) -> str:
 
 
 def natural_name(data_type: str, description: str, brand: str | None, names: dict[str, str]) -> str:
+    """Our everyday name for a food. An AI-written name is used only if it passes the checker again today;
+    otherwise USDA's own description stands."""
+    ai = names.get(description)
+    if ai and not name_is_valid(description, ai):
+        ai = None
     if data_type in ("foundation", "sr_legacy"):
-        return names.get(description) or description
+        return ai or description
     if data_type == "survey":
-        return names.get(description) or re.sub(r",? NFS\b", "", description).strip(" ,")
+        return ai or re.sub(r",? NFS\b", "", description).strip(" ,")
     name = sentence_case(description)
     if brand:
         pretty = sentence_case(brand) if brand.isupper() else brand
         if pretty.lower() not in name.lower():
             name = f"{pretty} {name[0].lower() + name[1:] if name[:1].isupper() and not name[:2].isupper() else name}"
     return name
+
+
+# Identity. Every FDC id is its own food. A record points at another as its main page only when USDA describes
+# them the same way (for branded products: same brand too) AND their core values agree; names we generate play
+# no part. A USDA note that is not about the food is ignored when comparing descriptions.
+IDENTITY_NOTE = re.compile(r"\s*\(includes foods for usda's food distribution program\)", re.I)
+CORE = ("calories", "fat", "protein", "carbohydrates", "sodium")
+
+
+def identity_description(description: str) -> str:
+    return re.sub(r"\s+", " ", IDENTITY_NOTE.sub("", description)).strip(" ,.").lower()
+
+
+def same_values(a: dict[str, float], b: dict[str, float]) -> bool:
+    """Core values agree within 2 %, or within half a unit for small amounts; a value one record has and the other
+    lacks counts as a difference."""
+    for key in CORE:
+        x, y = a.get(key), b.get(key)
+        if x is None and y is None:
+            continue
+        if x is None or y is None or abs(x - y) > max(0.02 * max(abs(x), abs(y)), 0.5):
+            return False
+    return True
 
 
 def clean_owner(owner: str) -> str:
@@ -283,7 +313,7 @@ def build(folder: Path, out: Path) -> None:
             if label:
                 portions.append((fdc_id, int(r["id"]), label, float(r["gram_weight"])))
     # Branded foods have one portion: the label serving ("2 Pancakes (85g)"). Liquids are labelled in ml; their
-    # grams assume 1 g per ml, as USDA does when it scales label values to 100 g.
+    # grams use our approximate 1 g/ml density; add_estimates records this assumption.
     for b in branded_rows:
         fdc_id, size, unit, household = b[0], b[5], (b[6] or "").lower(), b[7]
         if size and size > 0 and unit in ("g", "grm", "ml", "mlt"):
@@ -349,25 +379,40 @@ def build(folder: Path, out: Path) -> None:
            from food_value c left join food_value f on f.fdc_id = c.fdc_id and f.key = 'fiber'
            where c.key = 'carbohydrates'"""
     )
-    # Natural names, then one main page per name: generic foods sharing a name point at the one with the most
-    # nutrient data (Foundation > SR Legacy > Survey on a tie); identical branded products (same brand and name)
-    # at the most recent. Thin branded labels (under 6 nutrients) stay out of the sitemap too.
+    add_estimates(db)
+    # Natural names, then main pages. Records USDA describes identically (branded: same brand too) form a group;
+    # its main page is the record with the most nutrient data (Foundation > SR Legacy > Survey on a tie; branded:
+    # the most recent). A member points at the main page only if its core values agree with it; a record that
+    # differs materially keeps its own page. Thin branded labels (under 6 nutrients) stay out of the sitemap too.
     names = json.loads(NAMES.read_text()) if NAMES.exists() else {}
     counts = dict(db.execute("select fdc_id, count(*) from food_nutrient group by fdc_id"))
+    core: dict[int, dict[str, float]] = {}
+    for fid, key, amount in db.execute(f"select fdc_id, key, amount from food_value where key in ({','.join('?' * len(CORE))})", CORE):
+        core.setdefault(fid, {})[key] = amount
     order = {"foundation": 0, "sr_legacy": 1, "survey": 2, "branded": 3}
-    named = [(fid, dt, natural_name(dt, desc, brand, names)) for fid, dt, desc, brand in db.execute("select fdc_id, data_type, description, brand from food")]
+    food_rows = db.execute("select fdc_id, data_type, description, brand from food").fetchall()
+    named = [(fid, dt, natural_name(dt, desc, brand, names)) for fid, dt, desc, brand in food_rows]
     groups: dict[tuple, list] = {}
-    for fid, dt, name in named:
-        key = ("branded" if dt == "branded" else "generic", name.lower())
+    for fid, dt, desc, brand in food_rows:
+        branded = dt == "branded"
+        key = ("branded" if branded else "generic", identity_description(desc), (brand or "").lower() if branded else "")
         groups.setdefault(key, []).append((fid, dt))
     updates = []
-    for (kind, _), members in groups.items():
+    kept_apart = 0
+    for (kind, _, _), members in groups.items():
+        if len(members) == 1:
+            continue
         if kind == "generic":
             main = min(members, key=lambda m: (-counts.get(m[0], 0), order[m[1]], m[0]))[0]
         else:
             main = max(m[0] for m in members)
         for fid, _ in members:
-            updates.append((None if fid == main else main, fid))
+            if fid == main:
+                continue
+            if same_values(core.get(fid, {}), core.get(main, {})):
+                updates.append((main, fid))
+            else:
+                kept_apart += 1
     db.executemany("update food set canonical_fdc_id = ? where fdc_id = ?", updates)
     # URLs follow the natural name too (old slugs still work: the site redirects any slug to the right one by id).
     db.executemany("update food set name = ?, slug = ? where fdc_id = ?", ((name, slugify(name), fid) for fid, _, name in named))
@@ -379,9 +424,10 @@ def build(folder: Path, out: Path) -> None:
     unnamed = sum(
         1 for (d,) in db.execute("select description from food where data_type in ('foundation', 'sr_legacy', 'survey')") if d not in names
     )
-    print(f"{len(names):,} natural names; {stats[1]:,} foods point at a main page; {stats[2]:,} of {stats[0]:,} indexable", flush=True)
+    print(f"{len(names):,} natural names; {stats[1]:,} foods point at a main page ({kept_apart:,} same-described records "
+          f"kept apart because their values differ); {stats[2]:,} of {stats[0]:,} indexable", flush=True)
     if unnamed:
-        print(f"{unnamed} generic foods have no natural name yet: run `python -m mfadata.names <db>` (only these are asked) and rebuild", flush=True)
+        print(f"{unnamed} generic foods use USDA's own description (no checked name; `python -m mfadata.names <db>` would ask for new ones)", flush=True)
     db.executescript(INDEXES)
     db.execute("insert into release values ('built', datetime('now'))")
     db.commit()
