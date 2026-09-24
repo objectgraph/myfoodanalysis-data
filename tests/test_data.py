@@ -227,7 +227,7 @@ def test_natural_names_keep_the_food(db):
     """Catalyst's names (mfadata/names.json) are checked when written; re-check them against today's descriptions."""
     from mfadata.names import valid
 
-    rows = db.execute("select description, name from food where data_type in ('foundation', 'sr_legacy') and name != description").fetchall()
+    rows = db.execute("select description, name from food where data_type in ('foundation', 'sr_legacy', 'survey') and name != description").fetchall()
     assert len(rows) > 5000, "names.json looks missing: run python -m mfadata.names"
     bad = [r for r in rows if not valid(*r)]
     assert bad == []

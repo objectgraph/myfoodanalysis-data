@@ -146,7 +146,7 @@ def natural_name(data_type: str, description: str, brand: str | None, names: dic
     if data_type in ("foundation", "sr_legacy"):
         return names.get(description) or description
     if data_type == "survey":
-        return re.sub(r",? NFS\b", "", description).strip(" ,")
+        return names.get(description) or re.sub(r",? NFS\b", "", description).strip(" ,")
     name = sentence_case(description)
     if brand:
         pretty = sentence_case(brand) if brand.isupper() else brand
@@ -376,12 +376,12 @@ def build(folder: Path, out: Path) -> None:
            or (data_type = 'branded' and coalesce((select count(*) from food_nutrient n where n.fdc_id = food.fdc_id), 0) < 6)"""
     )
     stats = db.execute("select count(*), sum(canonical_fdc_id is not null), sum(indexable) from food").fetchone()
-    unnamed = sum(1 for _, dt, _ in named if dt in ("foundation", "sr_legacy")) - sum(
-        1 for (d,) in db.execute("select description from food where data_type in ('foundation', 'sr_legacy')") if d in names
+    unnamed = sum(
+        1 for (d,) in db.execute("select description from food where data_type in ('foundation', 'sr_legacy', 'survey')") if d not in names
     )
     print(f"{len(names):,} natural names; {stats[1]:,} foods point at a main page; {stats[2]:,} of {stats[0]:,} indexable", flush=True)
     if unnamed:
-        print(f"{unnamed} Foundation/SR foods have no natural name yet: run `python -m mfadata.names <db>` (only these are asked) and rebuild", flush=True)
+        print(f"{unnamed} generic foods have no natural name yet: run `python -m mfadata.names <db>` (only these are asked) and rebuild", flush=True)
     db.executescript(INDEXES)
     db.execute("insert into release values ('built', datetime('now'))")
     db.commit()

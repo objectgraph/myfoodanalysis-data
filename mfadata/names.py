@@ -6,7 +6,8 @@ USDA's Foundation and SR Legacy foods are named like a card catalogue ("Cheese, 
 Atlantic, wild, cooked, dry heat"). People search "cheddar cheese" and "wild salmon cooked". This asks a language
 model (we use qwen3.8:27b through Ollama on our own server; set CATALYST_LLM_URL and CATALYST_LLM_MODEL) to rename
 each one, 40 at a time, then checks every answer mechanically. Names are keyed by USDA's description, so they carry
-over to the next release. Survey (FNDDS) names are already everyday English and are not sent.
+over to the next release. Survey (FNDDS) names are mostly everyday English already ("Banana, raw"); they are sent
+too, so the few catalogue-style ones ("Cheese, Cheddar") read the same way as the rest.
 """
 
 import json
@@ -107,7 +108,7 @@ def valid(description: str, name: str) -> bool:
 
 def main(db_path: str) -> None:
     db = sqlite3.connect(db_path)
-    rows = db.execute("select fdc_id, description from food where data_type in ('foundation', 'sr_legacy') order by fdc_id").fetchall()
+    rows = db.execute("select fdc_id, description from food where data_type in ('foundation', 'sr_legacy', 'survey') order by fdc_id").fetchall()
     names: dict[str, str] = json.loads(OUT.read_text()) if OUT.exists() else {}
     todo = [(i, d) for i, d in rows if d not in names]
     print(f"{len(rows)} foods, {len(names)} named already, {len(todo)} to go", flush=True)
