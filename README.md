@@ -42,6 +42,12 @@ as ketchup for catsup), stays under 70 characters and is a plain phrase. `names.
 name; it is keyed by description, so a new USDA release only needs names for descriptions not seen before. You can run
 the script against any OpenAI-style or Ollama endpoint (`CATALYST_LLM_URL`, `CATALYST_LLM_MODEL`).
 
+## Keeping up with USDA
+
+`USDA_RELEASE` names the release the database is built from. A GitHub Action (`.github/workflows/usda-release.yml`) checks
+USDA's download page every Monday with `scripts/check_usda_release.py` and opens an issue when a newer release is out;
+the issue lists the steps to import it. Names carry over by USDA description, so only new foods are sent to the model.
+
 ## Licences
 
 Code: MIT. `mfadata/names.json`: CC0. USDA FoodData Central: public domain. Nutrition values are information, not

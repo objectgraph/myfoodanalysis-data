@@ -1,0 +1,44 @@
+# Every Monday: is USDA's newest FoodData Central release newer than USDA_RELEASE? If so, open an issue (once).
+name: USDA release check
+
+on:
+  schedule:
+    - cron: "17 13 * * 1" # Mondays 13:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - id: check
+        run: |
+          set +e
+          out=$(python scripts/check_usda_release.py)
+          code=$?
+          echo "$out"
+          if [ $code -eq 1 ]; then echo "release=$(echo "$out" | sed -n 's/^NEW_RELEASE=//p')" >> "$GITHUB_OUTPUT"; elif [ $code -ne 0 ]; then exit $code; fi
+      - if: steps.check.outputs.release != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.check.outputs.release }}
+        run: |
+          title="USDA FoodData Central $RELEASE is out"
+          if gh issue list --state open --search "\"$title\" in:title" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "issue already open"; exit 0
+          fi
+          gh issue create --title "$title" --body "USDA published FoodData Central **$RELEASE** (we are on $(cat USDA_RELEASE)).
+
+          To import it:
+          1. Download \`FoodData_Central_csv_$RELEASE.zip\` from https://fdc.nal.usda.gov/download-datasets/ into \`data/\` and unzip it.
+          2. \`uv run python -m mfadata.build data/fdc-$RELEASE/FoodData_Central_csv_$RELEASE data/foods-$RELEASE.db\`
+          3. \`uv run python -m mfadata.names data/foods-$RELEASE.db\` (only new descriptions are named), then build again.
+          4. \`uv run pytest\`, set \`USDA_RELEASE\` to $RELEASE, commit \`mfadata/names.json\` and \`USDA_RELEASE\`.
+          5. Ship the database and redeploy the site (the private deploy notes)."
