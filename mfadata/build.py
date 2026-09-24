@@ -14,6 +14,7 @@ import sqlite3
 import sys
 import time
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 from mfadata.nutrients import NUTRIENTS
@@ -84,8 +85,37 @@ create index food_value_rank_idx on food_value(key, everyday, amount desc);
 create index food_value_category_idx on food_value(key, category_id, amount);
 create index food_value_food_idx on food_value(fdc_id);
 create index branded_gtin_idx on branded(gtin);
-insert into food_fts(rowid, description, brand) select fdc_id, description || ' ' || coalesce(name, ''), coalesce(brand, '') from food;
 """
+
+# The search index, its own step so it can be rebuilt on a finished database (index_search).
+SEARCH_INDEX = """
+insert into food_fts(rowid, description, brand)
+    select fdc_id, with_joined(description || ' ' || coalesce(name, '')), with_joined(coalesce(brand, '')) from food;
+"""
+
+
+def with_joined(text: str) -> str:
+    """The text plus each hyphenated or apostrophied word written as one ("Coca-Cola" -> "cocacola", "Reese's" ->
+    "reeses", "Chick-fil-A" -> "chickfila"), so a search typed either way finds it. The index otherwise splits
+    words at punctuation."""
+    words = re.findall(r"\w+(?:['’&.-]\w+)+", text)
+    joined = {re.sub(r"[^\w]", "", w).lower() for w in words if re.search(r"[^\W\d_]", w)}
+    return " ".join([text, *sorted(joined)]) if joined else text
+
+
+def index_search(db: sqlite3.Connection) -> None:
+    """The full-text index, and food_words: every word (letters only, as written, joined forms included) with the
+    number of foods it appears in. The API corrects misspelt search words against food_words; the index itself
+    holds stemmed words, which would read badly as a suggestion ("chees")."""
+    db.create_function("with_joined", 1, with_joined, deterministic=True)
+    db.execute("insert into food_fts(food_fts) values ('delete-all')")
+    db.executescript(SEARCH_INDEX)
+    counts: Counter[str] = Counter()
+    for text in db.execute("select description || ' ' || coalesce(name, '') || ' ' || coalesce(brand, '') from food"):
+        counts.update(set(re.findall(r"[^\W\d_]{2,}", with_joined(text[0]).lower())))
+    db.execute("drop table if exists food_words")
+    db.execute("create table food_words (word text primary key, foods integer not null) without rowid")
+    db.executemany("insert into food_words values (?, ?)", ((w, n) for w, n in counts.items() if n >= 3))
 
 
 def slugify(text: str, limit: int = 80) -> str:
@@ -429,6 +459,7 @@ def build(folder: Path, out: Path) -> None:
     if unnamed:
         print(f"{unnamed} generic foods use USDA's own description (no checked name; `python -m mfadata.names <db>` would ask for new ones)", flush=True)
     db.executescript(INDEXES)
+    index_search(db)
     db.execute("insert into release values ('built', datetime('now'))")
     db.commit()
     db.execute("vacuum")

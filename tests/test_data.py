@@ -292,3 +292,12 @@ def test_thin_branded_labels_stay_out_of_the_sitemap(db):
            and (select count(*) from food_nutrient n where n.fdc_id = f.fdc_id) < 6"""
     ).fetchone()[0]
     assert thin == 0
+
+
+def test_search_index_holds_joined_forms():
+    from mfadata.build import with_joined
+
+    assert with_joined("Coca-Cola, Cola").endswith(" cocacola")
+    assert with_joined("Reese's Peanut Butter Cups").endswith(" reeses")
+    assert with_joined("Chick-fil-A sandwich").endswith(" chickfila")
+    assert with_joined("1.5% milk, raw") == "1.5% milk, raw"  # numbers are not words
