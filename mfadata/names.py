@@ -128,12 +128,70 @@ QUALIFIERS: list[tuple[str, str, str]] = [
 ]
 
 
+# Specific cooking methods and the words a name may use for each. A method in the description must survive in the
+# name; a name may not add one the description does not allow. "dry heat" and "moist heat" allow their methods.
+METHODS: dict[str, set[str]] = {
+    # "roast" alone is often a cut ("rib roast"), not a method; "microwave" is a heating instruction
+    "roasted": {"roasted"}, "baked": {"baked"}, "grilled": {"grilled"}, "broiled": {"broiled", "broil"},
+    "fried": {"fried", "pan-fried", "deep-fried", "stir-fried"}, "boiled": {"boiled"}, "steamed": {"steamed"},
+    "stewed": {"stewed"}, "braised": {"braised"}, "simmered": {"simmered"}, "poached": {"poached"},
+    "sauteed": {"sauteed", "sautéed"}, "microwaved": {"microwaved"}, "toasted": {"toasted"}, "scrambled": {"scrambled"},
+    "smoked": {"smoked"},
+}
+FAMILIES = {"dry heat": {"roasted", "baked", "grilled", "broiled"},
+            "moist heat": {"boiled", "steamed", "stewed", "braised", "simmered", "poached"}}
+
+
+def _methods(text: str) -> set[str]:
+    found = set()
+    for method, words in METHODS.items():
+        if any(re.search(rf"(?<!\w){re.escape(w)}\b", text) for w in words):  # "cooked-roasted" counts
+            found.add(method)
+    if re.search(r"\w-fried\b", text):  # batter-fried, flour-fried, pan-fried
+        found.add("fried")
+    return found
+
+
+_METHOD_WORD = "|".join(sorted({re.escape(w) for ws in METHODS.values() for w in ws}, key=len, reverse=True))
+_ALTERNATIVES = re.compile(rf"\b(?:{_METHOD_WORD})\b(?:\s*,\s*(?:or\s+)?(?:{_METHOD_WORD})\b|\s+or\s+(?:{_METHOD_WORD})\b)+")
+
+
+def _optional_methods(text: str) -> set[str]:
+    """Methods offered as alternatives ("baked or broiled", "baked, broiled, or roasted", "smoked or cured"): a name may
+    keep one of them or none, since the record covers any of them."""
+    out: set[str] = set()
+    for m in _ALTERNATIVES.finditer(text):
+        if " or " in m.group(0):
+            out |= _methods(m.group(0))
+    if re.search(r"\bns as to\b[^,]*,\s*\w+ or \w+", text):  # "NS as to fresh, smoked or cured": unknown either way
+        out |= _methods(text[text.index("ns as to"):])
+    return out
+
+
+def _percents(text: str) -> set[float]:
+    """Percentages as numbers: "5% milkfat" -> {5.0}; "15%" is 15, never 5."""
+    return {float(x) for x in re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)\s?%", text)}
+
+
 def qualifiers_kept(description: str, name: str) -> list[str]:
-    """The qualifiers of USDA's description that the name drops or flips (empty when it keeps them all). Every
-    percentage in the description ("85% lean", "2% milkfat") must also appear in the name."""
+    """The qualifiers of USDA's description that the name drops, flips or contradicts (empty when it keeps them all).
+    Percentages are compared as numbers and must match both ways; each cooking method must survive, and a name may
+    not add a method the description does not allow (FAMILIES)."""
     d, n = description.lower(), name.lower()
     lost = [label for label, in_desc, in_name in QUALIFIERS if re.search(in_desc, d) and not re.search(in_name, n)]
-    lost += [p for p in re.findall(r"\d+(?:\.\d+)?%", d) if p not in n]
+    dp, np_ = _percents(d), _percents(n)
+    # "95% lean meat / 5% fat": either figure says the other, so a name may keep just one
+    lean = re.search(r"(\d+(?:\.\d+)?)% lean", d)
+    fat = re.search(r"(\d+(?:\.\d+)?)% fat", d)
+    if lean and fat and abs(float(lean.group(1)) + float(fat.group(1)) - 100) < 0.01 and (float(lean.group(1)) in np_ or float(fat.group(1)) in np_):
+        np_ = np_ | {float(lean.group(1)), float(fat.group(1))}
+    lost += [f"{p:g}%" for p in sorted(dp - np_)] + [f"added {p:g}%" for p in sorted(np_ - dp)]
+    dm, nm = _methods(d), _methods(n)
+    lost += [f"method {m}" for m in sorted(dm - nm - _optional_methods(d))]
+    allowed = dm | {m for fam, ms in FAMILIES.items() if fam in d for m in ms}
+    if re.search(r"\bmicrowave\b", d):  # a heating instruction ("heated (microwave)"): may be named, need not be
+        allowed.add("microwaved")
+    lost += [f"added method {m}" for m in sorted(nm - allowed)]
     return lost
 
 

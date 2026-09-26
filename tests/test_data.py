@@ -236,7 +236,7 @@ def test_natural_names_keep_the_food(db):
 def test_duplicates_point_at_a_main_page(db):
     """A record points at a main page only if USDA describes both the same way (same brand for products) and their
     core values agree; the main page is itself a main page (no chains), and duplicates leave the sitemap."""
-    from mfadata.build import identity_description, same_values, CORE
+    from mfadata.build import identity_description, same_values
 
     chains = db.execute(
         "select count(*) from food f join food m on m.fdc_id = f.canonical_fdc_id where m.canonical_fdc_id is not null"
@@ -248,9 +248,9 @@ def test_duplicates_point_at_a_main_page(db):
            from food f join food m on m.fdc_id = f.canonical_fdc_id"""
     ).fetchall()
     assert pairs
-    marks = ",".join("?" * len(CORE))
     core: dict[int, dict[str, float]] = {}
-    for fid, key, amount in db.execute(f"select fdc_id, key, amount from food_value where key in ({marks})", CORE):
+    for fid, key, amount in db.execute("select fdc_id, key, amount from food_value where fdc_id in (select fdc_id from food where canonical_fdc_id is not null "
+                                       "union select canonical_fdc_id from food where canonical_fdc_id is not null)"):
         core.setdefault(fid, {})[key] = amount
     for fid, desc, brand, mid, mdesc, mbrand in pairs:
         assert identity_description(desc) == identity_description(mdesc), (fid, mid)
@@ -263,14 +263,18 @@ def test_duplicates_point_at_a_main_page(db):
     [
         (2710614, 2710599, "drink powder (218 kcal) is not the prepared drink (2 kcal)"),
         (170855, 171251, "processed Swiss cheese (1,370 mg sodium) is not Swiss cheese (187 mg)"),
+        (2163589, 2195098, "Simple Truth powdered peanut butter: 8.3 vs 16.7 g fiber (two barcodes)"),
+        (1864031, 1864215, "Malt O Meal cereal: 43.6 vs 10.9 g fiber (two barcodes)"),
     ],
 )
 def test_different_foods_are_never_merged(db, a, b, why):
-    """Regressions from the Sept 24, 2026 audit: an AI name once made these look identical."""
+    """Regressions from the Sept 24, 2026 audits: an AI name, or matching headline values, once made these one page."""
     rows = dict(db.execute("select fdc_id, coalesce(canonical_fdc_id, fdc_id) from food where fdc_id in (?, ?)", (a, b)).fetchall())
     assert rows[a] != rows[b], why
-    names = dict(db.execute("select fdc_id, lower(name) from food where fdc_id in (?, ?)", (a, b)).fetchall())
-    assert names[a] != names[b], why
+    kinds = dict(db.execute("select fdc_id, data_type from food where fdc_id in (?, ?)", (a, b)).fetchall())
+    if "branded" not in kinds.values():  # two barcodes may share a label; generic foods must also read differently
+        names = dict(db.execute("select fdc_id, lower(name) from food where fdc_id in (?, ?)", (a, b)).fetchall())
+        assert names[a] != names[b], why
 
 
 def test_names_keep_qualifiers_and_negations():
@@ -301,3 +305,26 @@ def test_search_index_holds_joined_forms():
     assert with_joined("Reese's Peanut Butter Cups").endswith(" reeses")
     assert with_joined("Chick-fil-A sandwich").endswith(" chickfila")
     assert with_joined("1.5% milk, raw") == "1.5% milk, raw"  # numbers are not words
+
+
+@pytest.mark.parametrize(
+    "description,name,ok",
+    [
+        ("Milk, 5% milkfat", "Milk, 15% milkfat", False),  # Codex's counterexample: 15% contains the text "5%"
+        ("Milk, 5% milkfat", "Milk, 5% milkfat", True),
+        ("Milk, reduced fat, fluid, 2% milkfat", "2% reduced-fat milk, 12% milkfat", False),  # a percentage added
+        ("Nuts, dry roasted, with salt added", "Nuts, boiled, with salt added", False),  # Codex's counterexample
+        ("Nuts, dry roasted, with salt added", "Dry roasted nuts, salted", True),
+        ("Fish, salmon, Atlantic, farmed, cooked, dry heat", "Grilled farmed Atlantic salmon", True),  # dry heat allows grilling
+        ("Fish, salmon, Atlantic, farmed, cooked, dry heat", "Boiled farmed Atlantic salmon", False),
+        ("Chicken breast, baked or broiled, skin eaten", "Baked chicken breast, skin on", True),  # one of the alternatives
+        ("Chicken breast, baked or broiled, skin eaten", "Fried chicken breast, skin on", False),
+        ("Beef, ground, 95% lean meat / 5% fat, raw", "Ground beef, 95% lean, raw", True),  # 95% lean says 5% fat
+        ("Beef, rib, large end, raw", "Beef rib roast, large end, raw", True),  # a cut, not a method
+    ],
+)
+def test_names_keep_percentages_and_methods(description, name, ok):
+    """Codex's second audit (Sept 24, 2026): percentages as numbers, cooking methods kept and never contradicted."""
+    from mfadata.names import valid
+
+    assert valid(description, name) is ok

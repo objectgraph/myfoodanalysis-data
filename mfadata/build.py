@@ -196,21 +196,27 @@ def natural_name(data_type: str, description: str, brand: str | None, names: dic
 # them the same way (for branded products: same brand too) AND their core values agree; names we generate play
 # no part. A USDA note that is not about the food is ignored when comparing descriptions.
 IDENTITY_NOTE = re.compile(r"\s*\(includes foods for usda's food distribution program\)", re.I)
-CORE = ("calories", "fat", "protein", "carbohydrates", "sodium")
 
 
 def identity_description(description: str) -> str:
     return re.sub(r"\s+", " ", IDENTITY_NOTE.sub("", description)).strip(" ,.").lower()
 
 
+# The smallest difference that counts, by unit, when two records are compared value by value.
+TOLERANCE = {"g": 0.1, "mg": 1.0, "µg": 1.0, "kcal": 2.0}
+UNIT = {n.key: n.unit for n in NUTRIENTS}
+
+
 def same_values(a: dict[str, float], b: dict[str, float]) -> bool:
-    """Core values agree within 2 %, or within half a unit for small amounts; a value one record has and the other
-    lacks counts as a difference."""
-    for key in CORE:
-        x, y = a.get(key), b.get(key)
-        if x is None and y is None:
-            continue
-        if x is None or y is None or abs(x - y) > max(0.02 * max(abs(x), abs(y)), 0.5):
+    """Two records agree on every nutrient either reports: the same nutrients present (one reporting a value the other
+    lacks is a difference), and each within 2 % or a small absolute amount for its unit (TOLERANCE). Agreement on a
+    few headline values is not enough: the Sept 24 audit found products that matched on five and differed twofold in
+    fiber."""
+    if set(a) != set(b):
+        return False
+    for key, x in a.items():
+        y = b[key]
+        if abs(x - y) > max(0.02 * max(abs(x), abs(y)), TOLERANCE.get(UNIT.get(key, "g"), 0.1)):
             return False
     return True
 
@@ -410,15 +416,14 @@ def build(folder: Path, out: Path) -> None:
            where c.key = 'carbohydrates'"""
     )
     add_estimates(db)
-    # Natural names, then main pages. Records USDA describes identically (branded: same brand too) form a group;
-    # its main page is the record with the most nutrient data (Foundation > SR Legacy > Survey on a tie; branded:
-    # the most recent). A member points at the main page only if its core values agree with it; a record that
-    # differs materially keeps its own page. Thin branded labels (under 6 nutrients) stay out of the sitemap too.
+    # Natural names, then main pages. Records USDA describes identically (branded: same brand too) form a group; its
+    # main page is the record with the most nutrient data (Foundation > SR Legacy > Survey on a tie; branded: the most
+    # recent). A member points at the main page only if it agrees with it on every nutrient either reports
+    # (same_values): two barcodes are one page only when their labels are equivalent, value for value, as with the same
+    # product in two package sizes; a matching description and brand alone never merges them (Codex's second audit,
+    # Sept 24, 2026). Thin branded labels (under 6 nutrients) stay out of the sitemap.
     names = json.loads(NAMES.read_text()) if NAMES.exists() else {}
     counts = dict(db.execute("select fdc_id, count(*) from food_nutrient group by fdc_id"))
-    core: dict[int, dict[str, float]] = {}
-    for fid, key, amount in db.execute(f"select fdc_id, key, amount from food_value where key in ({','.join('?' * len(CORE))})", CORE):
-        core.setdefault(fid, {})[key] = amount
     order = {"foundation": 0, "sr_legacy": 1, "survey": 2, "branded": 3}
     food_rows = db.execute("select fdc_id, data_type, description, brand from food").fetchall()
     named = [(fid, dt, natural_name(dt, desc, brand, names)) for fid, dt, desc, brand in food_rows]
@@ -427,6 +432,12 @@ def build(folder: Path, out: Path) -> None:
         branded = dt == "branded"
         key = ("branded" if branded else "generic", identity_description(desc), (brand or "").lower() if branded else "")
         groups.setdefault(key, []).append((fid, dt))
+    # every value of every record that shares its description with another, for same_values
+    db.execute("create temp table grouped (fdc_id integer primary key)")
+    db.executemany("insert into grouped values (?)", ((fid,) for members in groups.values() if len(members) > 1 for fid, _ in members))
+    core: dict[int, dict[str, float]] = {}
+    for fid, key, amount in db.execute("select v.fdc_id, v.key, v.amount from food_value v join grouped g on g.fdc_id = v.fdc_id"):
+        core.setdefault(fid, {})[key] = amount
     updates = []
     kept_apart = 0
     for (kind, _, _), members in groups.items():
