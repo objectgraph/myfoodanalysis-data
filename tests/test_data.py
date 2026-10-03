@@ -201,7 +201,9 @@ def test_net_carbs_are_carbs_minus_fiber(db):
 
 def test_servings_and_portions_are_sensible(db):
     assert db.execute("select count(*) from portion where gram_weight <= 0").fetchone()[0] == 0
-    assert db.execute("select count(*) from serving s join food f using (fdc_id) where f.data_type != 'branded' and (s.gram_weight <= 0 or s.gram_weight > 350)").fetchone()[0] == 0
+    # Generic servings: nothing over 350 g except a 12 fl oz can of beer or root beer (355-372 g).
+    assert db.execute("select count(*) from serving s join food f using (fdc_id) where f.data_type != 'branded' and (s.gram_weight <= 0 or s.gram_weight > 400)").fetchone()[0] == 0
+    assert db.execute("select count(*) from serving s join food f using (fdc_id) where f.data_type != 'branded' and s.gram_weight > 350 and lower(f.description) not like '%beer%'").fetchone()[0] == 0
     # Label servings can be a whole family pack; a few over a kilogram are real (41 in 2026-04-30), none are zero.
     assert db.execute("select count(*) from serving s join food f using (fdc_id) where f.data_type = 'branded' and s.gram_weight <= 0").fetchone()[0] == 0
     assert db.execute("select count(*) from serving s join food f using (fdc_id) where f.data_type = 'branded' and s.gram_weight > 1000").fetchone()[0] < 200

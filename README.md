@@ -27,7 +27,7 @@ ingredients, label serving), `category`, `superseded` (old FDC ids and where the
 | Branded foods: the latest record per barcode in the selected download; older records map to it | `latest_branded` |
 | Nutrient catalogue: which USDA nutrient ids feed each nutrient, in order (e.g. energy: kcal, else Atwater specific, else general), FDA Daily Values | `mfadata/nutrients.py` |
 | Values shown are never negative (USDA's carbohydrate-by-difference is slightly negative for a few raw meats); net carbs = carbs − fiber | `build` |
-| A default serving when usable portion data exists (branded: the label serving); not an intake recommendation | `serving_rank` |
+| The serving a page leads with: branded, the label serving; generic, the USDA portion each kind of food is eaten by (FDA reference amounts: cheese by the slice or ounce, butter by the tablespoon, meat by 3 oz…), a stated weight in ounces (or 8 of the food's own fl oz for drinks) where USDA lists none; not an intake recommendation | `choose_serving`, `SERVING_KINDS`, `reselect_servings` |
 | "Everyday" foods for rankings (no dried spices, baby foods, isolates, regional specialties) | `NOT_EVERYDAY*` |
 | Ten broad food groups for colour and filtering | `mfadata/groups.py` |
 | Natural names for Foundation and SR Legacy foods, written by an AI model and checked by code | `mfadata/names.py`, `mfadata/names.json` |

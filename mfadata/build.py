@@ -9,6 +9,7 @@ catalogue in `mfa.nutrients` is resolved into `food_value` for ranking and label
 
 import csv
 import json
+import math
 import re
 import sqlite3
 import sys
@@ -147,6 +148,13 @@ def portion_label(r: dict, units: dict[str, str]) -> str:
 
 
 SERVING_PREFERENCE = ["1 medium", "1 large", "nlea serving", "serving", "3 oz", "1 cup", "1 oz", "1 tbsp", "1 tablespoon", "1 slice", "1 piece", "1 large", "1 small"]
+# A sliver is never the serving while USDA lists anything else: "1 fl oz" of beer, "1 cubic inch" of cheese, a 3 g packet,
+# a slice with the crust left on the plate.
+SLIVER = re.compile(r"^(1 fl oz|1 tsp|1 teaspoon|1 cubic inch|1 surface inch|1 pat\b|1 kernel|1 serving packet)|crust not eaten", re.I)
+# Nor a label without an amount ("Guideline amount per sandwich", "Quantity not specified"): it reads badly in a title.
+AMOUNT = re.compile(r"^\s*[\d.½¼¾⅓⅔]")
+# "1 medium slice", "1 thin slice" and "1 medium or regular slice" are all slices when a kind prefers "1 slice".
+SIZE = re.compile(r"^(\d+) (?:(?:small|medium|large|regular|thin|thick)(?: or (?:small|medium|large|regular|thin|thick))? )+", re.I)
 
 
 def serving_rank(label: str, description: str = "") -> int:
@@ -159,6 +167,139 @@ def serving_rank(label: str, description: str = "") -> int:
         if p in low:
             return i
     return len(SERVING_PREFERENCE)
+
+
+# Kinds of generic food whose everyday serving is not the default's. The amounts follow the FDA's reference amounts
+# customarily consumed (21 CFR 101.12, the basis of label serving sizes), in the household measure people use: 3 oz of
+# chicken, a slice or an ounce of cheese, a tablespoon of butter, two of peanut butter. Per kind: the labels to prefer
+# in order, the reference grams (otherwise the portion nearest them wins), and the ounces to state when USDA lists no
+# portion near them (weights convert exactly; volumes would need a density, so those kinds never invent one).
+OZ = 28.349523125
+SERVING_KINDS: dict[str, tuple[tuple[str, ...], float | None, int | None]] = {
+    "meat": (("3 oz",), 85, 3),
+    "drink": (("1 cup",), 240, None),
+    "deli": (("1 slice", "1 link", "1 patty", "1 frank", "1 sausage", "1 piece"), 55, None),
+    "cheese": (("1 slice", "1 oz"), 28, 1),
+    "soft cheese": (("4 oz", "0.5 cup", "1/2 cup"), 113, 4),
+    "nuts": (("1 oz",), 28, 1),
+    "nut butter": (("2 tbsp", "1 tbsp", "1 tablespoon"), 32, None),
+    "fat": (("1 tbsp", "1 tablespoon"), 14, None),
+    "dressing": (("2 tbsp",), 30, None),
+    "spread": (("1 tbsp", "1 tablespoon"), 20, None),
+    "sugar": (("1 tsp", "1 teaspoon"), 4, None),
+    "snack": (("1 oz",), 28, 1),
+    "bread": (("1 slice",), None, None),  # a sliced loaf by the slice; a pita, a naan or a roll by its own unit (the default)
+    "egg": (("1 large",), 50, None),
+    "beer": (("12 fl oz", "1 can", "1 bottle"), 356, None),
+}
+MEAT_CATEGORIES = {"Beef Products", "Pork Products", "Lamb, Veal, and Game Products", "Poultry Products", "Finfish and Shellfish Products",
+                   "Chicken, whole pieces", "Fish", "Shellfish", "Beef, excludes ground", "Ground beef", "Pork", "Turkey, duck, other poultry",
+                   "Lamb, goat, game", "Liver and organ meats"}
+DELI_CATEGORIES = {"Sausages and Luncheon Meats", "Cold cuts and cured meats", "Sausages", "Bacon", "Frankfurters"}
+# Survey (FNDDS) drinks list "1 fl oz" and containers; a cup (8 fl oz) is the reference. Alcohol keeps its own measures.
+DRINK_CATEGORIES = {"Apple juice", "Citrus juice", "Other fruit juice", "Vegetable juice", "Fruit drinks", "Soft drinks", "Diet soft drinks",
+                    "Sport and energy drinks", "Diet sport and energy drinks", "Other diet drinks", "Tea", "Coffee", "Flavored or carbonated water",
+                    "Enhanced water", "Bottled water", "Tap water", "Milk, whole", "Milk, reduced fat", "Milk, lowfat", "Milk, nonfat",
+                    "Flavored milk, whole", "Flavored milk, reduced fat", "Flavored milk, lowfat", "Flavored milk, nonfat", "Plant-based milk",
+                    "Milk shakes and other dairy drinks", "Nutritional beverages", "Smoothies and grain drinks"}
+SNACK_CATEGORIES = {"Potato chips", "Tortilla, corn, other chips", "Pretzels/snack mix", "Crackers, excludes saltines", "Saltine crackers"}
+
+
+def serving_kind(description: str, category: str | None) -> str | None:
+    """The kind of food for SERVING_KINDS, from USDA's description and category; None for the default rule."""
+    d, c = description.lower(), category or ""
+    if re.search(r"\bbeer\b", d):
+        return "beer"
+    if c in DRINK_CATEGORIES or (c == "Beverages" and not re.search(r"alcoholic|powder|dry|mix\b|concentrate|instant|syrup", d)):
+        return "drink"
+    if re.search(r"\b(salad|spread|bits)\b", d) and (c in DELI_CATEGORIES or c in MEAT_CATEGORIES):
+        return None  # ham salad, deviled ham spread, bacon bits: not eaten by the slice or the 3 oz
+    if re.match(r"(pork, cured, |beef, cured, )?(bacon|breakfast strips)\b", d) or c in DELI_CATEGORIES:
+        return "deli"
+    if c in MEAT_CATEGORIES:
+        return None if re.search(r"caviar|\broe\b", d) else "meat"
+    if c in SNACK_CATEGORIES or (c in ("Snacks", "Baked Products") and re.search(r"\b(chips|crisps|pretzels|crackers|puffs|snack mix|trail mix)\b", d)):
+        return None if "soft" in d else "snack"
+    if re.search(r"\b(peanut|almond|cashew|hazelnut|sunflower seed|sesame) butter\b|^tahini|\bnut butter\b|^peanut butter", d):
+        return "nut butter"
+    if c in ("Nut and Seed Products", "Nuts and seeds"):
+        return None if re.search(r"milk|flour|meal|oil|cream|juice|paste|butter|spread", d) else "nuts"
+    if d.startswith("cheese") or c in ("Cheese", "Cottage/ricotta cheese"):
+        if re.search(r"cottage|ricotta", d) or c == "Cottage/ricotta cheese":
+            return "soft cheese"
+        return None if re.search(r"sauce|dip|soup|fondue|cheesecake|puff|straw|cracker", d) else "cheese"
+    if ("salad dressing" in d and "mayonnaise" not in d) or ("dressing" in d and c == "Salad dressings and vegetable oils"):
+        return "dressing"
+    if c in ("Fats and Oils", "Salad dressings and vegetable oils", "Butter and animal fats", "Margarine", "Mayonnaise") or \
+            re.match(r"(butter|margarine|oil|shortening|lard|mayonnaise)\b", d):
+        return "fat"
+    if re.match(r"(honey|jams?|jell(y|ies)|preserves|marmalade|catsup|ketchup|mustard)\b", d) or \
+            c in ("Jams, syrups, toppings", "Tomato-based condiments", "Mustard and other condiments", "Soy-based condiments"):
+        return "spread"
+    if re.match(r"sugars?\b", d) and "substitute" not in d:
+        return "sugar"
+    if c == "Yeast breads" or (c == "Baked Products" and d.startswith("bread,")):
+        return "bread"
+    if d.startswith(("egg, whole", "eggs, whole")):
+        return "egg"
+    return None
+
+
+def choose_serving(items: list[tuple[int, str, float]], description: str, category: str | None, branded: bool) -> tuple[str, float] | None:
+    """The serving a food page leads with (its title, snippet and "per serving" rankings): (label, grams). items are
+    the food's portions as (seq, label, grams). Branded foods keep the label serving; generic foods take the portion
+    their kind is eaten by (SERVING_KINDS), else the default preference, never a whole roast over 350 g or a sliver."""
+    if branded:
+        best = min(items, key=lambda i: (serving_rank(i[1], description), i[0]), default=None)
+        return (best[1], best[2]) if best else None
+    kind = serving_kind(description, category)
+    usable = [i for i in items if 0 < i[2] <= (400 if kind == "beer" else 350)]  # a 12 fl oz can weighs 355 g
+    if kind:
+        prefer, target, ounces = SERVING_KINDS[kind]
+
+        def fit(i: tuple[int, str, float]) -> tuple:
+            low = SIZE.sub(r"\1 ", i[1].lower())
+            preferred = next((n for n, p in enumerate(prefer) if low.startswith(p)), len(prefer))
+            unusual = bool(SIZE.match(i[1])) and not re.search(r"medium|regular", i[1], re.I)  # a regular slice before a thick one
+            return (preferred, not AMOUNT.match(i[1]), bool(SLIVER.search(i[1])), unusual, abs(math.log(i[2] / (target or 30))), i[0])
+
+        best = min(usable, key=fit, default=None)
+        if target is None and (best is None or fit(best)[0] == len(prefer)):
+            kind = None  # none of the preferred labels: the default rule below
+        # Weighed kinds say it the same way on every page ("3 oz", never "0.5 breast" because it weighs 86 g).
+        elif ounces and (best is None or fit(best)[0] == len(prefer)):
+            return f"{ounces} oz", round(ounces * OZ, 1)
+        # A drink without a cup: eight of USDA's own fluid ounces (its weight for "1 fl oz", ice left out).
+        elif kind == "drink" and (best is None or fit(best)[0] == len(prefer)) and \
+                (floz := [i for i in items if re.match(r"1 fl oz\b", i[1], re.I) and "with ice" not in i[1].lower()]):
+            return "8 fl oz", round(floz[0][2] * 8, 1)
+        else:
+            return (best[1], best[2]) if best else None
+
+    def rank(i: tuple[int, str, float]) -> tuple:
+        return (not AMOUNT.match(i[1]), serving_rank(i[1], description) + (100 if SLIVER.search(i[1]) or i[2] < 5 else 0), i[0])
+
+    best = min(usable, key=rank, default=None)
+    return (best[1], best[2]) if best else None
+
+
+def reselect_servings(db: sqlite3.Connection) -> int:
+    """Choose every generic food's serving again with choose_serving, in place on a built database (portions, names and
+    values unchanged); returns how many changed. The build calls the same function, so a rebuild gives the same result."""
+    portions: dict[int, list] = {}
+    for fdc_id, seq, label, grams in db.execute("select fdc_id, seq, label, gram_weight from portion"):
+        portions.setdefault(fdc_id, []).append((seq, label, grams))
+    old = dict(((r[0], (r[1], r[2])) for r in db.execute("select fdc_id, label, gram_weight from serving")))
+    new = {}
+    for fdc_id, data_type, description, category in db.execute(
+            "select f.fdc_id, f.data_type, f.description, c.name from food f left join category c on c.id = f.category_id where f.data_type != 'branded'"):
+        chosen = choose_serving(portions.get(fdc_id, []), description, category, branded=False)
+        if chosen:
+            new[fdc_id] = chosen
+    generic = [r[0] for r in db.execute("select fdc_id from food where data_type != 'branded'")]
+    db.executemany("delete from serving where fdc_id = ?", ((i,) for i in generic))
+    db.executemany("insert into serving values (?, ?, ?)", ((i, label, grams) for i, (label, grams) in new.items()))
+    return sum(1 for i in set(generic) if old.get(i) != new.get(i))
 
 
 NAMES = Path(__file__).with_name("names.json")
@@ -363,17 +504,17 @@ def build(folder: Path, out: Path) -> None:
             portions.append((fdc_id, 1, label, size))
     db.executemany("insert or ignore into portion values (?, ?, ?, ?)", portions)
 
-    # One typical serving per food for "per serving" rankings: the label serving if USDA gives one,
-    # else a common household measure, never a whole roast or a package over 350 g.
+    # One typical serving per food, for its title and "per serving" rankings (choose_serving): the label serving for
+    # branded foods, the portion a generic food is eaten by otherwise.
     by_food: dict[int, list] = {}
     for fdc_id, seq, label, grams in portions:
         by_food.setdefault(fdc_id, []).append((seq, label, grams))
     servings = []
-    for fdc_id, items in by_food.items():
-        usable = [i for i in items if i[2] <= 350] if foods[fdc_id][1] != "branded" else items
-        if usable:
-            _, label, grams = min(usable, key=lambda i: (serving_rank(i[1], foods[fdc_id][2]), i[0]))
-            servings.append((fdc_id, label, grams))
+    for fdc_id, (_, data_type, description, _, category_id, *_) in foods.items():
+        category = categories[category_id][2] if category_id in categories else None
+        chosen = choose_serving(by_food.get(fdc_id, []), description, category, branded=data_type == "branded")
+        if chosen:
+            servings.append((fdc_id, *chosen))
     db.executemany("insert into serving values (?, ?, ?)", servings)
     print(f"{len(portions):,} portions", flush=True)
 
