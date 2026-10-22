@@ -303,6 +303,13 @@ def reselect_servings(db: sqlite3.Connection) -> int:
     return sum(1 for i in set(generic) if old.get(i) != new.get(i))
 
 
+# Out of the sitemap: a record that points at a main page, or a thin branded label (under 6 nutrients). mfadata.quality
+# takes out records whose values cannot be right on top of this, and gives a record this rule's answer back when its
+# values are corrected.
+NOT_INDEXABLE = """canonical_fdc_id is not null
+    or (data_type = 'branded' and coalesce((select count(*) from food_nutrient n where n.fdc_id = food.fdc_id), 0) < 6)"""
+
+
 NAMES = Path(__file__).with_name("names.json")
 SMALL_CAPS = re.compile(r"\b(bbq|usa|uht|dha|epa|ara|lgg|gmo|mct)\b", re.I)
 
@@ -599,10 +606,7 @@ def build(folder: Path, out: Path) -> None:
     db.executemany("update food set canonical_fdc_id = ? where fdc_id = ?", updates)
     # URLs follow the natural name too (old slugs still work: the site redirects any slug to the right one by id).
     db.executemany("update food set name = ?, slug = ? where fdc_id = ?", ((name, slugify(name), fid) for fid, _, name in named))
-    db.execute(
-        """update food set indexable = 0 where canonical_fdc_id is not null
-           or (data_type = 'branded' and coalesce((select count(*) from food_nutrient n where n.fdc_id = food.fdc_id), 0) < 6)"""
-    )
+    db.execute(f"update food set indexable = 0 where {NOT_INDEXABLE}")
     stats = db.execute("select count(*), sum(canonical_fdc_id is not null), sum(indexable) from food").fetchone()
     unnamed = sum(
         1 for (d,) in db.execute("select description from food where data_type in ('foundation', 'sr_legacy', 'survey')") if d not in names

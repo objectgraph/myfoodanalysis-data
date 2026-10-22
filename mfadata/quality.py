@@ -9,8 +9,10 @@ The test is physical, on the serving the label states, with the rounding labels 
 than the serving plus 1 g, the macronutrients together no more than the serving plus 2 g, energy no more than 9 kcal a
 gram (pure fat) plus 10, sodium no more than 400 mg a gram (table salt is 388) plus 10. Volumes allow 1.5 g a
 milliliter (syrups and honey are about 1.4). A tiny serving that rounds up (1 g of carbohydrate in a 0.7 g packet of tea
-mix scales to 143 g per 100 g) passes, because the label serving itself is possible. Without a usable label serving
-the same limits apply to 100 g, with a little more room for rounding.
+mix scales to 143 g per 100 g) passes, because the label serving itself is possible. USDA rounds the per-100 g values to
+two decimals, so the serving amounts worked back from them are rounded to two decimals before the comparison (106.67 g
+per 100 g of mints is 16.0005 g in a 15 g serving: the label said 16). Without a usable label serving the same limits
+apply to 100 g, with a little more room for rounding.
 
     python -m mfadata.quality data/foods-2026-04-30.db    # mark the records in place on a built database
 """
@@ -58,16 +60,16 @@ def problems(values: dict[str, float], serving: tuple[float, str] | None = None,
     capacity = size * (GRAMS_PER_ML if unit == "ml" else 1)
     out = []
     for key, words in MASS.items():
-        amount = values.get(key, 0) * scale
+        amount = round(values.get(key, 0) * scale, 2)
         if amount > capacity + room:
             out.append(f"{_n(amount)} g of {words} {where}")
-    macros = sum(values.get(k, 0) for k in MACROS) * scale
+    macros = round(sum(values.get(k, 0) for k in MACROS) * scale, 2)
     if not out and macros > capacity + 2 * room:
         out.append(f"{_n(macros)} g of protein, fat and carbohydrate together {where}")
-    kcal = values.get("calories", 0) * scale
+    kcal = round(values.get("calories", 0) * scale, 2)
     if kcal > 9 * capacity + 10 * room:
         out.append(f"{_n(kcal)} kcal {where}")
-    sodium = values.get("sodium", 0) * scale
+    sodium = round(values.get("sodium", 0) * scale, 2)
     if sodium > 400 * capacity + 10 * room:
         out.append(f"{_n(sodium)} mg of sodium {where}")
     return out
@@ -75,9 +77,13 @@ def problems(values: dict[str, float], serving: tuple[float, str] | None = None,
 
 def flag_foods(db: sqlite3.Connection) -> int:
     """Mark every record that fails `problems` in the table food_quality (fdc_id, problems as a JSON list) and take its
-    page out of the sitemap; in place on a built database, and the build calls it too. Returns how many."""
-    db.execute("drop table if exists food_quality")
-    db.execute("create table food_quality (fdc_id integer primary key, problems text not null)")
+    page out of the sitemap; in place on a built database, and the build calls it too. Returns how many.
+
+    Everything is worked out first; the table and the sitemap flags are then replaced in one transaction, so a reader
+    (the API, during an in-place refresh) sees the old marks or the new ones, never none, and a failure leaves the old.
+    A record whose values were corrected gets back the sitemap place the build's rule gives it (build.NOT_INDEXABLE)."""
+    from mfadata.build import NOT_INDEXABLE  # here, not at the top: the build imports this module
+
     marks = ",".join("?" * len(CHECKED))
     values: dict[int, dict[str, float]] = {}
     for fdc_id, key, amount in db.execute(f"select fdc_id, key, amount from food_value where key in ({marks})", CHECKED):
@@ -90,8 +96,25 @@ def flag_foods(db: sqlite3.Connection) -> int:
         found = problems(vals, serving_basis(size, unit), per)
         if found:
             rows.append((fdc_id, json.dumps(found)))
-    db.executemany("insert into food_quality values (?, ?)", rows)
-    db.execute("update food set indexable = 0 where fdc_id in (select fdc_id from food_quality)")
+    had = {r[0] for r in db.execute("select fdc_id from food_quality")} if db.execute(
+        "select 1 from sqlite_master where type = 'table' and name = 'food_quality'").fetchone() else set()
+    cleared = had - {fdc_id for fdc_id, _ in rows}
+    own = not db.in_transaction  # inside the build, its transaction; on a built database, this one
+    if own:
+        db.execute("begin immediate")
+    try:
+        db.execute("drop table if exists food_quality")
+        db.execute("create table food_quality (fdc_id integer primary key, problems text not null)")
+        db.executemany("insert into food_quality values (?, ?)", rows)
+        db.execute("update food set indexable = 0 where fdc_id in (select fdc_id from food_quality)")
+        db.executemany(f"update food set indexable = case when ({NOT_INDEXABLE}) then 0 else 1 end where fdc_id = ?",
+                       ((i,) for i in cleared))
+    except BaseException:
+        if own:
+            db.rollback()
+        raise
+    if own:
+        db.commit()
     return len(rows)
 
 
