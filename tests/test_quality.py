@@ -105,3 +105,12 @@ def test_a_corrected_record_gets_its_sitemap_place_back(tmp_path):
     con.commit()
     assert flag_foods(con) == 0
     assert dict(con.execute("select fdc_id, indexable from food")) == {1: 1, 2: 1, 3: 0}  # 3 stays out: a thin label
+
+
+def test_single_precision_serving_sizes_are_read_as_the_label_states_them():
+    # FDC 2561920 / 2561921 (sea and pink salt): 1.4 g stored as 1.39999997615814, 570 mg of sodium on the label
+    assert serving_basis(1.39999997615814, "GRM") == (1.4, "g")
+    assert problems({"sodium": 40714}, serving_basis(1.39999997615814, "GRM")) == []
+    assert problems({"sodium": 40769}, serving_basis(1.29999995231628, "g")) == []  # FDC 1566438 / 2678770: 1.3 g, 530 mg
+    assert serving_basis(0.125, "g") == (0.125, "g")  # a real three-decimal serving is kept
+    assert problems({"protein": 3400}, serving_basis(1.0000000001, "g"))  # the burrito stays caught

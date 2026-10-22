@@ -37,10 +37,13 @@ def _n(v: float) -> str:
 
 
 def serving_basis(size: float | None, unit: str | None) -> tuple[float, str] | None:
-    """The label serving as (amount, "g" or "ml"), or None when it cannot be weighed (no size, mg, IU…)."""
+    """The label serving as (amount, "g" or "ml"), or None when it cannot be weighed (no size, mg, IU…). USDA stores
+    the size in single precision (a 1.4 g salt serving is 1.39999997615814), so it is rounded to three decimals, the
+    precision labels state, before anything is compared with it."""
     u = (unit or "").strip().lower()
     if not size or size <= 0:
         return None
+    size = round(size, 3)
     if u in ("g", "grm", "gm"):
         return size, "g"
     if u in ("ml", "mlt"):
