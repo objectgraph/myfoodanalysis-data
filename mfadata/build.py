@@ -21,6 +21,7 @@ from pathlib import Path
 from mfadata.nutrients import NUTRIENTS
 from mfadata.estimates import add_estimates
 from mfadata.names import valid as name_is_valid
+from mfadata.quality import flag_foods
 
 # SR Legacy foods left out of the default rankings: traditional and regional foods, organ meats, infant
 # foods and commodity items. They keep their pages; "all foods" rankings still include them.
@@ -610,6 +611,7 @@ def build(folder: Path, out: Path) -> None:
           f"kept apart because their values differ); {stats[2]:,} of {stats[0]:,} indexable", flush=True)
     if unnamed:
         print(f"{unnamed} generic foods use USDA's own description (no checked name; `python -m mfadata.names <db>` would ask for new ones)", flush=True)
+    print(f"{flag_foods(db):,} records whose values cannot be right (mfadata.quality), out of the sitemap", flush=True)
     db.executescript(INDEXES)
     index_search(db)
     db.execute("insert into release values ('built', datetime('now'))")

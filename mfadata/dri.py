@@ -1,14 +1,17 @@
 """Personal daily targets from the Dietary Reference Intakes (DRIs) of the National Academies of Sciences, Engineering,
 and Medicine: RDAs where they exist, otherwise Adequate Intakes (AI), with Tolerable Upper Intake Levels (UL) where set,
 by life stage (age, sex, pregnancy, breastfeeding). Transcribed from the NASEM DRI summary tables (vitamins, elements,
-macronutrients; potassium and sodium from the 2019 update). Energy follows Mifflin-St Jeor times an activity factor.
+macronutrients; potassium and sodium from the 2019 update). Energy follows Mifflin-St Jeor times an activity factor,
+plus the Institute of Medicine's (2005) allowance for the trimester of pregnancy or the months of breastfeeding.
 
     from mfadata.dri import targets
     targets(age=35, sex="female", weight_kg=62, height_cm=165, activity="moderate")
 
 Returns {nutrient key: {"min": ..., "max": ..., "source": "..."}}. These are reference intakes for healthy people by
 age and sex, not advice for anyone in particular; the site shows each target's source, and a person can change any of
-them. Ages under 9 are not covered here: callers fall back to the FDA Daily Values and say so.
+them. Only adults (19 and over) are covered: Mifflin-St Jeor was fitted on adults, and the teenage fat range and the
+teenage pregnancy rows differ from the adult ones, so for anyone younger the callers use the FDA Daily Values and say
+so. The 9–18 rows below stay in the tables for the day teenage targets are added.
 """
 
 from __future__ import annotations
@@ -77,11 +80,12 @@ BREASTFEEDING_MAGNESIUM = {(19, 30): 310, (31, 50): 320}
 
 # Tolerable Upper Intake Levels from food and supplements together, by stage (both sexes). Magnesium's and niacin's
 # ULs apply to supplements only, so they are left out; sodium has a Chronic Disease Risk Reduction intake instead.
+# Vitamin A's UL is for preformed vitamin A (retinol) only, while the catalogue's vitamin A is total retinol activity
+# equivalents, carotenoids included (400 g of carrots is 3,340 µg RAE and no retinol), so it is left out too.
 UL: dict[str, dict] = {
     "calcium": {(9, 13): 3000, (14, 18): 3000, (19, 30): 2500, (31, 50): 2500, (51, 70): 2000, (71, 200): 2000},
     "iron": {(9, 13): 40, **{s: 45 for s in [(14, 18)] + list(A)}},
     "zinc": {(9, 13): 23, (14, 18): 34, **{s: 40 for s in A}},
-    "vitamin-a": {(9, 13): 1700, (14, 18): 2800, **{s: 3000 for s in A}},
     "vitamin-c": {(9, 13): 1200, (14, 18): 1800, **{s: 2000 for s in A}},
     "vitamin-d": {s: 100 for s in [(9, 13), (14, 18)] + list(A)},
     "selenium": {(9, 13): 280, **{s: 400 for s in [(14, 18)] + list(A)}},
@@ -89,6 +93,14 @@ UL: dict[str, dict] = {
     "phosphorus": {(9, 13): 4000, (14, 18): 4000, (19, 30): 4000, (31, 50): 4000, (51, 70): 4000, (71, 200): 3000},
     "choline": {(9, 13): 2000, (14, 18): 3000, **{s: 3500 for s in A}},
 }
+PREGNANT_UL = {"phosphorus": 3500}  # the only adult UL that pregnancy changes; breastfeeding changes none
+
+# Energy added to the estimate (Institute of Medicine, 2005): by trimester of pregnancy, and by the baby's age while
+# breastfeeding (milk energy less the mother's weight loss in the first six months).
+TRIMESTER_KCAL = {1: 0, 2: 340, 3: 452}
+BREASTFEEDING_KCAL = {"0-6": 330, "7-12": 400}
+TRIMESTER_WORDS = {1: "first trimester", 2: "second trimester", 3: "third trimester"}
+BREASTFEEDING_WORDS = {"0-6": "breastfeeding, baby 0–6 months", "7-12": "breastfeeding, baby 7–12 months"}
 
 ACTIVITY = {"sedentary": 1.2, "light": 1.375, "moderate": 1.55, "active": 1.725, "very active": 1.9}
 ACTIVITY_WORDS = {"sedentary": "little or no exercise", "light": "light exercise 1–3 days a week",
@@ -102,10 +114,13 @@ def _amount(nutrient: str, st: tuple[int, int], sex: str) -> float | None:
 
 
 def targets(age: int, sex: str, weight_kg: float | None = None, height_cm: float | None = None,
-            activity: str | None = None, life_stage: str | None = None) -> dict[str, dict]:
-    """Daily targets for one person. `life_stage` is None, "pregnant" or "breastfeeding" (ages 19–50 only)."""
+            activity: str | None = None, life_stage: str | None = None, trimester: int | None = None,
+            baby_months: str | None = None) -> dict[str, dict]:
+    """Daily targets for one adult (19 and over; {} for anyone younger). `life_stage` is None, "pregnant" or
+    "breastfeeding" (ages 19–50); `trimester` (1–3) or `baby_months` ("0-6", "7-12") sets the energy allowance, and
+    without it there is no energy estimate rather than a guessed one."""
     st = stage(age)
-    if st is None or sex not in (M, F):
+    if st is None or age < 19 or sex not in (M, F):
         return {}
     group = f"{'males' if sex == M else 'females'} {_label(st)}"
     special = life_stage if life_stage in ("pregnant", "breastfeeding") and sex == F and 19 <= age <= 50 else None
@@ -121,12 +136,12 @@ def targets(age: int, sex: str, weight_kg: float | None = None, height_cm: float
             value = extra if extra is not None else value
         if value is None:
             continue
-        ul = UL.get(nutrient, {}).get(st)
+        ul = PREGNANT_UL.get(nutrient) if special == "pregnant" and nutrient in PREGNANT_UL else UL.get(nutrient, {}).get(st)
         out[nutrient] = {"min": value, "max": ul, "source": f"{kind} for {group}" + (f"; upper limit {ul:g}" if ul else "")}
     out["sodium"] = {"min": None, "max": 1800 if st == (9, 13) else 2300, "source": f"Chronic disease risk reduction limit, {_label(st)}"}
 
     # Protein: the RDA per kilogram of body weight when the weight is known, else the reference-weight RDA.
-    per_kg = 1.1 if special else 0.95 if st == (9, 13) else 0.85 if st == (14, 18) else 0.8
+    per_kg = 1.1 if special == "pregnant" else 1.3 if special == "breastfeeding" else 0.95 if st == (9, 13) else 0.85 if st == (14, 18) else 0.8
     if weight_kg:
         out["protein"] = {"min": round(per_kg * weight_kg), "max": None, "source": f"RDA {per_kg:g} g per kg body weight ({group})"}
     else:
@@ -134,22 +149,39 @@ def targets(age: int, sex: str, weight_kg: float | None = None, height_cm: float
         out["protein"] = {"min": ref, "max": None, "source": f"RDA for {group} (reference body weight)"}
 
     # Energy, then carbohydrate, fat and saturated fat as shares of it.
-    kcal = energy(age, sex, weight_kg, height_cm, activity, special)
+    kcal = energy(age, sex, weight_kg, height_cm, activity, special, trimester, baby_months)
     if kcal:
         words = ACTIVITY_WORDS.get(activity or "", "")
-        out["calories"] = {"min": kcal, "max": None, "source": f"Mifflin-St Jeor estimate × {ACTIVITY.get(activity or 'sedentary', 1.2):g} ({words})"
-                           + (f", + {340 if special == 'pregnant' else 330} for {special}" if special else "")}
+        allowance = ""
+        if special == "pregnant":
+            allowance = f", + {TRIMESTER_KCAL[trimester]} for the {TRIMESTER_WORDS[trimester]} (IOM 2005)"
+        elif special == "breastfeeding":
+            allowance = f", + {BREASTFEEDING_KCAL[baby_months]} for {BREASTFEEDING_WORDS[baby_months]} (IOM 2005)"
+        out["calories"] = {"min": kcal, "max": None,
+                           "source": f"Mifflin-St Jeor estimate × {ACTIVITY.get(activity or 'sedentary', 1.2):g} ({words}){allowance}"}
         out["carbohydrates"] = {"min": round(kcal * 0.45 / 4), "max": round(kcal * 0.65 / 4), "source": "45–65% of calories (AMDR)"}
         out["fat"] = {"min": round(kcal * 0.20 / 9), "max": round(kcal * 0.35 / 9), "source": "20–35% of calories (AMDR)"}
         out["saturated-fat"] = {"min": None, "max": round(kcal * 0.10 / 9), "source": "Under 10% of calories (Dietary Guidelines)"}
     return out
 
 
-def energy(age: int, sex: str, weight_kg: float | None, height_cm: float | None, activity: str | None, special: str | None = None) -> int | None:
-    """Estimated daily calories: Mifflin-St Jeor resting energy × activity factor (+340 in pregnancy's second trimester,
-    +330 while breastfeeding). None without weight and height."""
-    if not weight_kg or not height_cm:
+def energy(age: int, sex: str, weight_kg: float | None, height_cm: float | None, activity: str | None,
+           special: str | None = None, trimester: int | None = None, baby_months: str | None = None) -> int | None:
+    """Estimated daily calories for an adult: Mifflin-St Jeor resting energy × activity factor, plus the trimester's or
+    the breastfeeding months' allowance. None without weight and height, under 19, or in pregnancy or breastfeeding
+    without the trimester or the baby's age."""
+    if not weight_kg or not height_cm or age < 19:
         return None
+    if special == "pregnant":
+        if trimester not in TRIMESTER_KCAL:
+            return None
+        extra = TRIMESTER_KCAL[trimester]
+    elif special == "breastfeeding":
+        if baby_months not in BREASTFEEDING_KCAL:
+            return None
+        extra = BREASTFEEDING_KCAL[baby_months]
+    else:
+        extra = 0
     rest = 10 * weight_kg + 6.25 * height_cm - 5 * age + (5 if sex == M else -161)
-    total = rest * ACTIVITY.get(activity or "sedentary", 1.2) + (340 if special == "pregnant" else 330 if special == "breastfeeding" else 0)
+    total = rest * ACTIVITY.get(activity or "sedentary", 1.2) + extra
     return int(round(total / 10) * 10)

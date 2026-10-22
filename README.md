@@ -16,7 +16,7 @@ uv run pytest                                  # CSV comparisons and consistency
 The result is one read-only SQLite file. Its tables: `food` (455,801 foods with USDA's description, our natural `name`,
 the main page when USDA describes two records identically and their core values agree, and indexing eligibility), `food_nutrient` (reported values for included foods, per 100 g
 or 100 ml as supplied, unchanged), `food_value` (the nutrients we name, resolved), `value_provenance` (calculated values,
-estimates and their methods), `portion` and `serving`, `branded` (brand, barcode,
+estimates and their methods), `food_quality` (records whose values cannot be right), `portion` and `serving`, `branded` (brand, barcode,
 ingredients, label serving), `category`, `superseded` (old FDC ids and where they now point).
 
 ## What the build does
@@ -29,8 +29,9 @@ ingredients, label serving), `category`, `superseded` (old FDC ids and where the
 | Values shown are never negative (USDA's carbohydrate-by-difference is slightly negative for a few raw meats); net carbs = carbs − fiber | `build` |
 | The serving a page leads with: branded, the label serving; generic, the USDA portion each kind of food is eaten by (FDA reference amounts: cheese by the slice or ounce, butter by the tablespoon, meat by 3 oz…), a stated weight in ounces (or 8 of the food's own fl oz for drinks) where USDA lists none; not an intake recommendation | `choose_serving`, `SERVING_KINDS`, `reselect_servings` |
 | "Everyday" foods for rankings (no dried spices, baby foods, isolates, regional specialties) | `NOT_EVERYDAY*` |
-| Ten broad food groups for colour and filtering | `mfadata/groups.py` |
+| Ten broad food groups for color and filtering | `mfadata/groups.py` |
 | Natural names for Foundation and SR Legacy foods, written by an AI model and checked by code | `mfadata/names.py`, `mfadata/names.json` |
+| Records whose values cannot be right: a label serving holding more protein, fat, carbohydrate, energy or sodium than that much food can (with label rounding allowed), e.g. 3,400 g of protein per 100 g of a veggie burrito. Values stay as USDA published them; the record is marked, out of the sitemap, rankings and lists, and cannot be logged | `mfadata/quality.py` |
 | Main pages: only for records USDA describes identically (same brand for products) whose calories, fat, protein, carbohydrate and sodium agree within 2%; thin branded labels (under 6 nutrients) out of the sitemap | `identity_description`, `same_values` |
 
 ## Estimates

@@ -3,7 +3,9 @@
 Each entry lists the FoodData Central nutrient ids that can supply it, best first: USDA reports energy,
 carbohydrate, sugars and some fatty acids under different ids depending on the data type (Foundation foods
 carry Atwater energy, SR Legacy the classic 1008). `dv` is the FDA Daily Value for adults and children 4+
-(21 CFR 101.9, 2016 label), in the nutrient's own unit, or None where there is none.
+(21 CFR 101.9, 2016 label), in the nutrient's own unit, or None where there is none. `limit` marks what to stay
+under rather than reach (its Daily Value is a maximum: sodium, saturated fat, cholesterol, added sugars), one list for
+every target and every color.
 """
 
 from dataclasses import dataclass
@@ -18,6 +20,7 @@ class Nutrient:
     group: str
     dv: float | None = None
     rank: bool = True  # gets a "foods high in" page
+    limit: bool = False  # a maximum to stay under, never a minimum to reach
 
 
 NUTRIENTS: list[Nutrient] = [
@@ -25,25 +28,25 @@ NUTRIENTS: list[Nutrient] = [
     Nutrient("calories", "Calories", "kcal", (1008, 2048, 2047), "macros"),
     Nutrient("protein", "Protein", "g", (1003,), "macros", 50),
     Nutrient("fat", "Total fat", "g", (1004,), "macros", 78),
-    Nutrient("saturated-fat", "Saturated fat", "g", (1258,), "fats", 20),
-    Nutrient("trans-fat", "Trans fat", "g", (1257,), "fats", None, False),
+    Nutrient("saturated-fat", "Saturated fat", "g", (1258,), "fats", 20, limit=True),
+    Nutrient("trans-fat", "Trans fat", "g", (1257,), "fats", None, False, limit=True),
     Nutrient("monounsaturated-fat", "Monounsaturated fat", "g", (1292,), "fats"),
     Nutrient("polyunsaturated-fat", "Polyunsaturated fat", "g", (1293,), "fats"),
     Nutrient("omega-3-ala", "Omega-3 ALA", "g", (1404, 1270), "fats"),
     Nutrient("omega-3-epa", "Omega-3 EPA", "g", (1278,), "fats"),
     Nutrient("omega-3-dha", "Omega-3 DHA", "g", (1272,), "fats"),
     Nutrient("omega-6-la", "Omega-6 linoleic acid", "g", (1316, 1269), "fats"),
-    Nutrient("cholesterol", "Cholesterol", "mg", (1253,), "fats", 300),
+    Nutrient("cholesterol", "Cholesterol", "mg", (1253,), "fats", 300, limit=True),
     Nutrient("carbohydrates", "Carbohydrates", "g", (1005, 1050), "macros", 275),
     Nutrient("fiber", "Fiber", "g", (1079,), "macros", 28),
-    Nutrient("sugars", "Sugars", "g", (2000, 1063), "macros"),
-    Nutrient("added-sugars", "Added sugars", "g", (1235,), "macros", 50, False),
+    Nutrient("sugars", "Sugars", "g", (2000, 1063), "macros", limit=True),
+    Nutrient("added-sugars", "Added sugars", "g", (1235,), "macros", 50, False, limit=True),
     Nutrient("starch", "Starch", "g", (1009,), "macros"),
     Nutrient("water", "Water", "g", (1051,), "other"),
     Nutrient("caffeine", "Caffeine", "mg", (1057,), "other"),
     Nutrient("alcohol", "Alcohol", "g", (1018,), "other", None, False),
     # Minerals
-    Nutrient("sodium", "Sodium", "mg", (1093,), "minerals", 2300),
+    Nutrient("sodium", "Sodium", "mg", (1093,), "minerals", 2300, limit=True),
     Nutrient("potassium", "Potassium", "mg", (1092,), "minerals", 4700),
     Nutrient("calcium", "Calcium", "mg", (1087,), "minerals", 1300),
     Nutrient("iron", "Iron", "mg", (1089,), "minerals", 18),
@@ -91,6 +94,7 @@ NUTRIENTS: list[Nutrient] = [
 ]
 
 BY_KEY = {n.key: n for n in NUTRIENTS}
+LIMITS = {n.key for n in NUTRIENTS if n.limit}
 
 GROUPS = [
     ("macros", "Energy and macronutrients"),
